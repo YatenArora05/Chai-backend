@@ -24,15 +24,21 @@ const registerUser = asynchandler(async(req,res)=>{
         throw new ApiError(400,"All feilds are required");
     }
 
-    const existedUser=User.findOne({
-        $or:[{username},{email}]
-    })
-    if(existedUser)
+    const existedUser = await User.find({
+        $or: [{ username: username }, { email: email }]
+    });
+    
+    
+    if(existedUser > 0)
     {
          throw new ApiError(409,"User with Email alrerady exist")
     }
     const avatarLocalPath= req.files?.avatar[0]?.path;
-    const coverImageLocalPath =  req.files?.coverImage[0]?.path;
+    //const coverImageLocalPath =  req.files?.coverImage[0]?.path;
+    let coverImageLocalPath;
+    if(req.files && Array.isArray(req.files.coverImage) && req.files.coverImage.length>0){
+        coverImageLocalPath= req.files.coverImage[0].path;
+    }
 
     if(!avatarLocalPath)
          throw new ApiError(400,"Avatar file is requierd")
@@ -47,15 +53,15 @@ const registerUser = asynchandler(async(req,res)=>{
     const user= await User.create({
         fullname,
         avatar:avatar.url,
-        coverimaeg:coverImage?.url || "",
-        email,
+        coverimage:coverImage?.url || "",
+        email: email.toLowerCase(),
         password,
-        username:username.toLowercase()
+        username:username.toLowerCase()
     })
     const createdUser = await User.findById(user._id).select(
         "-password -refreshToken"
     )
-    if(createdUser){
+    if(!createdUser){
         throw new ApiError(500,"Something went wrong while registering the user" )
     }
 
@@ -65,4 +71,94 @@ const registerUser = asynchandler(async(req,res)=>{
     )
 })
 
-export {registerUser}
+const generateAccessAndRefereshToken = async(userId)=>{
+    try{
+         const user= await User.findById(userId)
+         const accessToken=user.generateAccessToken()
+         const refreshToken=user.generateRefreshToken()
+
+         user.refreshToken=refreshToken
+         await user.save({validateBeforeSave:false})
+
+         return {accessToken,refreshToken}
+    }catch(error){
+        throw new ApiError(500,"Something went worng while generating referesh adnd access token ")
+    }
+}
+const loginUser = asynchandler(async(req,res)=>{
+    // req body->data
+    //username or email
+    // find the user
+    //password check
+    // access and referesh token 
+    // send cookie
+
+
+    const {email,username,password}= req.body
+
+    if(!username && !email){
+        throw new ApiError(400,"userame or password is rerquired")
+    }
+
+    const user = await User.findOne({
+        $or:[{username},{email}]
+    })
+
+    if(!user){
+         throw new ApiError(400,"User not found")
+    }
+    const isPassword = await user.isPasswordcorrect(password)
+    if(!isPassword){
+        throw new ApiError(401,"Invalid user credentials ")
+   }
+    
+   const {accessToken,refreshToken}=await generateAccessAndRefereshToken(user._id)
+   
+   const loggedInUser=User.findById(user._id)
+   select("-password -refreshToken")
+
+   const options= {
+    httpOnly:true,
+    secure:true
+   }
+   return res
+   .status(200).cookie("accessToken", accessToken,options)
+   .cookie("refreshToken",refreshToken,options)
+    .json(
+        new ApiResponse(
+            200,
+            {
+                user:loggedInUser,accessToken,
+                refreshToken
+            },
+            "User Logged in Successfully"
+        )
+    )
+  
+})
+
+const logoutUser = asynchandler(async(req,res)=>{
+   await User.findByIdAndUpdate(
+      req.user._id,
+      {
+        $set:{
+            refreshToken:undefined
+        }
+      },
+      {
+        new:true
+      }
+   )
+
+   const options= {
+    httpOnly:true,
+    secure:true
+   }
+
+   return res.status(200).clearCookie("accessToken",options)
+   .clearCookie("refreshToken",options)
+   .json( new ApiResponse(200 ,{}, "User Logged Out Successfully"))
+
+})
+
+export {registerUser,loginUser,logoutUser}
